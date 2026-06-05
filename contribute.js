@@ -11,6 +11,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const loginSection = document.getElementById('login-section');
     const formSection = document.getElementById('form-section');
     const statusSection = document.getElementById('status-section');
+    const loginLimitBanner = document.getElementById('login-limit-banner');
+    const limitBarProgress = document.getElementById('limit-bar-progress');
+    const limitStatusText = document.getElementById('limit-status-text');
     
     const loginBtn = document.getElementById('login-btn');
     const logoutBtn = document.getElementById('logout-btn');
@@ -18,6 +21,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const userNameEl = document.getElementById('user-name');
     
     const songInput = document.getElementById('song-input');
+    const songInputLabel = document.querySelector('label[for="song-input"]');
+    const destDirRadios = document.querySelectorAll('input[name="dest-dir"]');
     const artistInput = document.getElementById('artist-input');
     const fileInput = document.getElementById('file-input');
     const dropZone = document.getElementById('drop-zone');
@@ -103,10 +108,35 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    function showLoginView() {
+    async function showLoginView() {
         formSection.style.display = 'none';
         statusSection.style.display = 'none';
         loginSection.style.display = 'block';
+        await checkLoginLimitStatus();
+    }
+
+    async function checkLoginLimitStatus() {
+        try {
+            let statusUrl = '/api/auth/status';
+            if (window.location.protocol === 'file:') {
+                statusUrl = 'https://canvas.echomusic.fun/api/auth/status';
+            }
+            const res = await fetch(statusUrl);
+            if (!res.ok) throw new Error();
+            const data = await res.json();
+            loginLimitBanner.style.display = 'block';
+            const percent = Math.min((data.count / data.limit) * 100, 100);
+            limitBarProgress.style.width = `${percent}%`;
+            if (data.limitReached) {
+                loginBtn.disabled = true;
+                limitStatusText.innerHTML = `<span class="limit-warning">Daily limit reached (${data.count}/${data.limit}).</span> Logins are paused until tomorrow to prevent automated spam and protect repository quotas.`;
+            } else {
+                loginBtn.disabled = false;
+                limitStatusText.innerHTML = `<strong>${data.count} / ${data.limit} daily logins used.</strong> Capacity is automatically refreshed daily at midnight UTC.`;
+            }
+        } catch (e) {
+            loginLimitBanner.style.display = 'none';
+        }
     }
 
     function resetUploadForm() {
@@ -119,6 +149,10 @@ document.addEventListener('DOMContentLoaded', () => {
         dropZone.style.display = 'flex';
         fileInput.value = '';
         
+        document.getElementById('type-song').checked = true;
+        songInputLabel.textContent = 'Song Title';
+        songInput.placeholder = 'e.g. Lost in Yesterday';
+        
         resetChecklist();
         updateSubmitButtonState();
     }
@@ -130,6 +164,18 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     dropZone.addEventListener('click', () => fileInput.click());
+    
+    destDirRadios.forEach(radio => {
+        radio.addEventListener('change', () => {
+            if (radio.value === 'Album') {
+                songInputLabel.textContent = 'Album Title';
+                songInput.placeholder = 'e.g. The Slow Rush';
+            } else {
+                songInputLabel.textContent = 'Song Title';
+                songInput.placeholder = 'e.g. Lost in Yesterday';
+            }
+        });
+    });
     
     ['dragenter', 'dragover'].forEach(eventName => {
         dropZone.addEventListener(eventName, (e) => {
@@ -300,35 +346,9 @@ document.addEventListener('DOMContentLoaded', () => {
         showLoadingView();
         
         try {
-            updateLoadingMessage('Querying Repository', 'Finding the next sequential number in active visualizers...');
-            
-            const [songFilesResponse, albumFilesResponse] = await Promise.all([
-                fetch(`${GITHUB_API_URL}/repos/${TARGET_OWNER}/${TARGET_REPO}/contents/Song`, {
-                    headers: { 'Authorization': `Bearer ${gitHubAccessToken}` }
-                }),
-                fetch(`${GITHUB_API_URL}/repos/${TARGET_OWNER}/${TARGET_REPO}/contents/Album`, {
-                    headers: { 'Authorization': `Bearer ${gitHubAccessToken}` }
-                })
-            ]);
-
-            if (!songFilesResponse.ok || !albumFilesResponse.ok) {
-                throw new Error('Failed to retrieve contents of Song/ or Album/ directories from upstream.');
-            }
-
-            const songFiles = await songFilesResponse.json();
-            const albumFiles = await albumFilesResponse.json();
-            const allFiles = [...songFiles, ...albumFiles];
-
-            const numbers = [];
-            allFiles.forEach(file => {
-                const match = file.name.match(/^(\d+)\.(mp4|m3u8)$/i);
-                if (match) {
-                    numbers.push(parseInt(match[1], 10));
-                }
-            });
-
-            const nextNumber = numbers.length > 0 ? Math.max(...numbers) + 1 : 1;
-            const newFilename = `${nextNumber}.${ext}`;
+            const sanitizedOriginalName = selectedFile.name.toLowerCase().replace(/[^a-z0-9._-]/g, '_');
+            const cleanName = sanitizedOriginalName.split('.')[0];
+            const newFilename = `${gitHubUsername.toLowerCase()}-${sanitizedOriginalName}`;
             const targetPath = `${destDir}/${newFilename}`;
 
             updateLoadingMessage('Configuring Repository', `Forking ${TARGET_OWNER}/${TARGET_REPO} to your profile...`);
@@ -381,7 +401,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             const refData = await refResponse.json();
             const mainSha = refData.object.sha;
-            const branchName = `canvas-submission-${nextNumber}`;
+            const branchName = `canvas-${gitHubUsername.toLowerCase()}-${cleanName}`;
 
             const createBranchResponse = await fetch(`${GITHUB_API_URL}/repos/${forkOwner}/${TARGET_REPO}/git/refs`, {
                 method: 'POST',
